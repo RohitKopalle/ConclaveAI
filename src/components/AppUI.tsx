@@ -28,6 +28,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { formatMarkdown } from '@/lib/formatMarkdown';
 
 const PIPELINE_STEPS = [
   { id: 'v1', label: 'Agent Alpha: Proposal (V1)', icon: BrainCircuit },
@@ -1046,10 +1047,10 @@ export default function AppUI() {
                       </h3>
 
                       {/* Content Body */}
-                      <div className="text-[15px] leading-relaxed space-y-4 font-sans text-foreground/90 pb-2">
+                      <div className="text-[15px] leading-relaxed space-y-3 font-sans text-foreground/90 pb-2">
                         {turn.activeTab === 'v1' &&
                           (turn.v1 ? (
-                            <div dangerouslySetInnerHTML={{ __html: turn.v1.replace(/\n/g, '<br/>') }} />
+                            <div dangerouslySetInnerHTML={{ __html: formatMarkdown(turn.v1) }} />
                           ) : (
                             <span className="text-foreground/40 animate-pulse flex items-center gap-2">
                               <Loader2 className="w-4 h-4 animate-spin" /> Alpha is formulating proposal...
@@ -1057,7 +1058,7 @@ export default function AppUI() {
                           ))}
                         {turn.activeTab === 'v2' &&
                           (turn.v2 ? (
-                            <div dangerouslySetInnerHTML={{ __html: turn.v2.replace(/\n/g, '<br/>') }} />
+                            <div dangerouslySetInnerHTML={{ __html: formatMarkdown(turn.v2) }} />
                           ) : (
                             <span className="text-foreground/40 animate-pulse flex items-center gap-2">
                               <Loader2 className="w-4 h-4 animate-spin" /> Beta is auditing and refining...
@@ -1065,7 +1066,7 @@ export default function AppUI() {
                           ))}
                         {turn.activeTab === 'v3' &&
                           (turn.v3 ? (
-                            <div dangerouslySetInnerHTML={{ __html: turn.v3.replace(/\n/g, '<br/>') }} />
+                            <div dangerouslySetInnerHTML={{ __html: formatMarkdown(turn.v3) }} />
                           ) : (
                             <span className="text-foreground/40 animate-pulse flex items-center gap-2">
                               <Loader2 className="w-4 h-4 animate-spin" /> Chairman is synthesizing final verdict...
@@ -1083,7 +1084,7 @@ export default function AppUI() {
                           <h4 className="font-serif text-sm font-semibold mb-2 flex items-center gap-2 text-gold">
                             <Sparkles className="w-4 h-4" /> Beta&apos;s Active Critique
                           </h4>
-                          <p className="text-foreground/70 font-sans text-[14px] leading-relaxed">{turn.eval1}</p>
+                          <div className="text-foreground/70 font-sans text-[14px] leading-relaxed" dangerouslySetInnerHTML={{ __html: formatMarkdown(turn.eval1) }} />
                         </motion.div>
                       )}
                       {turn.activeTab === 'v2' && turn.currentStepIndex === 3 && (
@@ -1095,7 +1096,7 @@ export default function AppUI() {
                           <h4 className="font-serif text-sm font-semibold mb-2 flex items-center gap-2 text-gold">
                             <CheckCircle2 className="w-4 h-4" /> Chairman&apos;s Verification
                           </h4>
-                          <p className="text-foreground/70 font-sans text-[14px] leading-relaxed">{turn.eval2}</p>
+                          <div className="text-foreground/70 font-sans text-[14px] leading-relaxed" dangerouslySetInnerHTML={{ __html: formatMarkdown(turn.eval2) }} />
                         </motion.div>
                       )}
                     </div>
