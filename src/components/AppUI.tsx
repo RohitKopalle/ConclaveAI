@@ -24,7 +24,8 @@ import {
   Zap,
   Scale,
   BookOpen,
-  AlertCircle
+  AlertCircle,
+  Trash2
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -371,6 +372,24 @@ export default function AppUI() {
     };
     setSessions((prev) => [newSession, ...prev]);
     setActiveSessionId(newSession.id);
+  };
+
+  const deleteSession = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setSessions((prev) => prev.filter((s) => s.id !== id));
+    if (activeSessionId === id) {
+      const remaining = sessions.filter((s) => s.id !== id);
+      setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+    }
+    if (user && user.email !== 'guest@conclave.local') {
+      supabase
+        .from('conclave_sessions')
+        .delete()
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) console.warn('Supabase delete error:', error);
+        });
+    }
   };
 
   const startAnalysis = async () => {
@@ -776,18 +795,28 @@ export default function AppUI() {
                 </div>
               ) : (
                 sessions.map((s) => (
-                  <button
+                  <div
                     key={s.id}
                     onClick={() => setActiveSessionId(s.id)}
-                    className={`w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center gap-3 transition-all ${
+                    className={`group w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center justify-between gap-2 transition-all cursor-pointer ${
                       activeSessionId === s.id
                         ? 'bg-gold/10 text-gold font-medium'
                         : 'hover:bg-surface-dark/80 text-foreground/70'
                     }`}
                   >
-                    <MessageSquare className="w-4 h-4 shrink-0" />
-                    <span className="truncate flex-1">{s.title}</span>
-                  </button>
+                    <div className="flex items-center gap-2.5 truncate flex-1 min-w-0">
+                      <MessageSquare className="w-4 h-4 shrink-0" />
+                      <span className="truncate">{s.title}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => deleteSession(e, s.id)}
+                      className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 text-foreground/40 transition-opacity rounded"
+                      title="Delete deliberation"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 ))
               )}
               {!isLoadingHistory && sessions.length === 0 && (
@@ -833,63 +862,75 @@ export default function AppUI() {
 
         <div className="flex-1 p-6 overflow-y-auto no-scrollbar px-6">
           {activeTurn ? (
-            <div className="space-y-6 relative">
-              <div className="absolute left-[15px] top-4 bottom-4 w-0.5 bg-border/50" />
-              {PIPELINE_STEPS.map((step, index) => {
-                const isActive = activeTurn.currentStepIndex === index && activeTurn.status === 'running';
-                const isPast = activeTurn.currentStepIndex > index || activeTurn.status === 'completed';
-                const Icon = step.icon;
+            !activeTurn.v1 && activeTurn.v3 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center p-4">
+                <div className="w-10 h-10 rounded-full bg-gold/15 flex items-center justify-center text-gold mb-3">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <h3 className="font-serif text-sm font-medium mb-1">Direct Assistant Response</h3>
+                <p className="text-xs text-foreground/50 leading-relaxed">
+                  Council debate is paused for conversational greetings. Submit a problem or scenario to activate deliberation.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-6 relative">
+                <div className="absolute left-[15px] top-4 bottom-4 w-0.5 bg-border/50" />
+                {PIPELINE_STEPS.map((step, index) => {
+                  const isActive = activeTurn.currentStepIndex === index && activeTurn.status === 'running';
+                  const isPast = activeTurn.currentStepIndex > index || activeTurn.status === 'completed';
+                  const Icon = step.icon;
 
-                return (
-                  <motion.div
-                    key={step.id + activeTurn.id}
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className={`relative flex items-start gap-4 ${
-                      isPast ? 'opacity-80' : isActive ? 'opacity-100' : 'opacity-30'
-                    }`}
-                  >
-                    <div
-                      className={`z-10 w-8 h-8 rounded-full flex items-center justify-center bg-surface border-2 transition-all ${
-                        isActive
-                          ? 'border-gold text-gold shadow-[0_0_12px_rgba(180,155,92,0.4)]'
-                          : isPast
-                          ? 'border-foreground text-foreground'
-                          : 'border-border text-border/50'
+                  return (
+                    <motion.div
+                      key={step.id + activeTurn.id}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      className={`relative flex items-start gap-4 ${
+                        isPast ? 'opacity-80' : isActive ? 'opacity-100' : 'opacity-30'
                       }`}
                     >
-                      {isActive ? <Loader2 className="w-4 h-4 animate-spin" /> : <Icon className="w-4 h-4" />}
-                    </div>
-                    <div className="pt-1">
-                      <p className={`font-medium text-[13px] ${isActive ? 'text-gold' : ''}`}>{step.label}</p>
-                      {isActive && <span className="text-[11px] text-gold/80 animate-pulse">Processing...</span>}
-                    </div>
+                      <div
+                        className={`z-10 w-8 h-8 rounded-full flex items-center justify-center bg-surface border-2 transition-all ${
+                          isActive
+                            ? 'border-gold text-gold shadow-[0_0_12px_rgba(180,155,92,0.4)]'
+                            : isPast
+                            ? 'border-foreground text-foreground'
+                            : 'border-border text-border/50'
+                        }`}
+                      >
+                        {isActive ? <Loader2 className="w-4 h-4 animate-spin" /> : <Icon className="w-4 h-4" />}
+                      </div>
+                      <div className="pt-1">
+                        <p className={`font-medium text-[13px] ${isActive ? 'text-gold' : ''}`}>{step.label}</p>
+                        {isActive && <span className="text-[11px] text-gold/80 animate-pulse">Processing...</span>}
+                      </div>
+                    </motion.div>
+                  );
+                })}
+
+                {(activeTurn.status === 'completed' || activeTurn.currentStepIndex > 1) && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="mt-12 space-y-4 relative z-10 bg-surface"
+                  >
+                    <h3 className="font-serif text-[15px] border-b border-border pb-2 text-foreground/80">Evolution Log</h3>
+
+                    {activeTurn.change1 && (
+                      <div className="bg-gold/5 border border-gold/20 p-3 rounded-xl text-xs shadow-sm">
+                        <p className="text-foreground/80 leading-relaxed font-sans">{activeTurn.change1}</p>
+                      </div>
+                    )}
+
+                    {activeTurn.change2 && activeTurn.currentStepIndex >= 4 && (
+                      <div className="bg-gold/5 border border-gold/20 p-3 rounded-xl text-xs shadow-sm mt-3">
+                        <p className="text-foreground/80 leading-relaxed font-sans">{activeTurn.change2}</p>
+                      </div>
+                    )}
                   </motion.div>
-                );
-              })}
-
-              {(activeTurn.status === 'completed' || activeTurn.currentStepIndex > 1) && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="mt-12 space-y-4 relative z-10 bg-surface"
-                >
-                  <h3 className="font-serif text-[15px] border-b border-border pb-2 text-foreground/80">Evolution Log</h3>
-
-                  {activeTurn.change1 && (
-                    <div className="bg-gold/5 border border-gold/20 p-3 rounded-xl text-xs shadow-sm">
-                      <p className="text-foreground/80 leading-relaxed font-sans">{activeTurn.change1}</p>
-                    </div>
-                  )}
-
-                  {activeTurn.change2 && activeTurn.currentStepIndex >= 4 && (
-                    <div className="bg-gold/5 border border-gold/20 p-3 rounded-xl text-xs shadow-sm mt-3">
-                      <p className="text-foreground/80 leading-relaxed font-sans">{activeTurn.change2}</p>
-                    </div>
-                  )}
-                </motion.div>
-              )}
-            </div>
+                )}
+              </div>
+            )
           ) : (
             <div className="h-full flex flex-col items-center justify-center text-center opacity-40">
               <TerminalSquare className="w-10 h-10 mb-2" />
@@ -962,9 +1003,9 @@ export default function AppUI() {
                         {(['v1', 'v2', 'v3'] as const).map((tab) => {
                           const isActive = turn.activeTab === tab;
                           const isVisible =
-                            (tab === 'v1' && turn.currentStepIndex >= 0) ||
-                            (tab === 'v2' && turn.currentStepIndex >= 2) ||
-                            (tab === 'v3' && turn.currentStepIndex >= 4);
+                            (tab === 'v1' && turn.v1 && turn.currentStepIndex >= 0) ||
+                            (tab === 'v2' && turn.v2 && turn.currentStepIndex >= 2) ||
+                            (tab === 'v3' && (turn.v3 || turn.currentStepIndex >= 4));
                           if (!isVisible) return null;
 
                           return (
@@ -985,7 +1026,7 @@ export default function AppUI() {
                                 isActive ? 'text-gold' : 'text-foreground/50 hover:text-foreground/80'
                               }`}
                             >
-                              {tab === 'v1' ? 'Agent Alpha (V1)' : tab === 'v2' ? 'Agent Beta (V2)' : 'Synthesis (V3)'}
+                              {tab === 'v1' ? 'Agent Alpha (V1)' : tab === 'v2' ? 'Agent Beta (V2)' : (turn.v1 ? 'Synthesis (V3)' : 'Assistant')}
                               {isActive && (
                                 <motion.div
                                   layoutId={`tab_${turn.id}`}
@@ -1001,7 +1042,7 @@ export default function AppUI() {
                       <h3 className="text-xl font-serif text-foreground/80 mb-6">
                         {turn.activeTab === 'v1' && "Alpha's Initial Proposal"}
                         {turn.activeTab === 'v2' && "Beta's Refined Architecture"}
-                        {turn.activeTab === 'v3' && "Chairman's Final Synthesis"}
+                        {turn.activeTab === 'v3' && (turn.v1 ? "Chairman's Final Synthesis" : "Conclave Assistant")}
                       </h3>
 
                       {/* Content Body */}

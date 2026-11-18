@@ -9,8 +9,62 @@ const CHAIRMAN_MODEL = 'mistralai/mistral-nemo';   // Executive Synthesizer
 type Message = { role: string; content: string };
 type DepthMode = 'brief' | 'moderate' | 'detailed';
 
+// 💬 GREETING & CONVERSATIONAL DETECTION
+function isGreetingOrConversational(prompt: string): boolean {
+  const clean = prompt.trim().toLowerCase().replace(/[^a-z0-9\s]/g, '');
+  const greetings = new Set([
+    'hi',
+    'hello',
+    'hey',
+    'heyy',
+    'heyyy',
+    'hi there',
+    'hello there',
+    'hey there',
+    'greetings',
+    'good morning',
+    'good afternoon',
+    'good evening',
+    'howdy',
+    'sup',
+    'whats up',
+    'what is up',
+    'yo',
+    'hola',
+    'how are you',
+    'how are you doing',
+    'how r u',
+    'who are you',
+    'what are you',
+    'what is conclave',
+    'what is ai conclave',
+    'what can you do',
+    'help',
+    'help me',
+    'test',
+    'testing',
+    'thanks',
+    'thank you'
+  ]);
+
+  if (greetings.has(clean)) return true;
+
+  const words = clean.split(/\s+/).filter(Boolean);
+  if (words.length <= 4 && (words[0] === 'hi' || words[0] === 'hello' || words[0] === 'hey')) {
+    if (words.includes('there') || words.includes('you') || words.includes('help') || words.includes('conclave')) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // 🌐 REAL-TIME WEB GROUNDING
 async function fetchRealTimeContext(query: string): Promise<string> {
+  const cleanQuery = query
+    .replace(/^(hi|hello|hey|please|can you|could you|tell me about|what is|explain)\s+/i, '')
+    .trim() || query;
+
   try {
     if (BRIGHTDATA_API_KEY) {
       const bdRes = await fetch('https://api.brightdata.com/request', {
@@ -19,7 +73,7 @@ async function fetchRealTimeContext(query: string): Promise<string> {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${BRIGHTDATA_API_KEY}`
         },
-        body: JSON.stringify({ zone: 'serp_api', url: `https://www.google.com/search?q=${encodeURIComponent(query)}`, format: 'raw' })
+        body: JSON.stringify({ zone: 'serp_api', url: `https://www.google.com/search?q=${encodeURIComponent(cleanQuery)}`, format: 'raw' })
       });
       if (bdRes.ok) {
         const data = await bdRes.json();
@@ -32,7 +86,7 @@ async function fetchRealTimeContext(query: string): Promise<string> {
 
   // Resilient Fallback (DuckDuckGo Lite HTML parsing)
   try {
-    const fallbackRes = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`);
+    const fallbackRes = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(cleanQuery)}`);
     const html = await fallbackRes.text();
     const snippets = [...html.matchAll(/<a class="result__snippet[^>]*>(.*?)<\/a>/g)]
       .map(m => m[1].replace(/<\/?[^>]+(>|$)/g, ""))
@@ -211,6 +265,35 @@ export async function POST(req: Request) {
       };
 
       try {
+        // 💬 Quick check for simple greetings / conversational pleasantries
+        if (isGreetingOrConversational(prompt)) {
+          const cleanPrompt = prompt.trim().toLowerCase().replace(/[^a-z0-9\s]/g, '');
+          let directResponse = `Hello! Welcome to **AI Conclave** — the multi-agent deliberation engine.
+
+Instead of relying on a single AI model, Conclave convenes three autonomous agents (**Agent Alpha**, **Agent Beta**, and **Chairman AI**) with real-time web grounding to debate, stress-test, and synthesize answers to complex problems with zero hallucinations.
+
+### How to use Conclave:
+1. **Submit a question or problem** — whether it's software architecture, scientific inquiry, policy analysis, market strategy, or a difficult technical trade-off.
+2. **Choose your response depth** using the selector above:
+   - ⚡ **Brief**: Fast, high-impact summary and core bullet points (~250 words).
+   - ⚖️ **Moderate** *(Default)*: Balanced, structured analysis with key nuances (~600 words).
+   - 📚 **Detailed**: Comprehensive, deep-dive architectural synthesis (~1200+ words).
+
+**What problem, question, or scenario would you like the Conclave to deliberate on?**`;
+
+          if (cleanPrompt === 'thanks' || cleanPrompt === 'thank you') {
+            directResponse = "You are very welcome! Whenever you have another complex scenario, architectural question, or decision to analyze, the Conclave is ready to deliberate.";
+          }
+
+          // Stream directly with natural typing cadence
+          for (let i = 0; i < directResponse.length; i += 6) {
+            sendData('v3', directResponse.slice(i, i + 6));
+            await new Promise((r) => setTimeout(r, 12));
+          }
+          sendData('completed', 'Done');
+          return;
+        }
+
         // Step 0: Gather Real-Time Context
         sendData('v1', '*(Initializing BrightData Web Search for real-time grounding...)*\n\n');
         const liveContext = await fetchRealTimeContext(prompt);
