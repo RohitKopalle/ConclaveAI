@@ -6,8 +6,10 @@
 export function formatMarkdown(text: string): string {
   if (!text) return '';
 
-  // 1. Normalize line endings
-  let md = text.replace(/\r\n/g, '\n');
+  // 1. Strip search status notice & normalize line endings
+  let md = text
+    .replace(/\*?\*?\(Initializing BrightData Web Search.*?\)\*?\*?\s*/gi, '')
+    .replace(/\r\n/g, '\n');
 
   // 2. Fenced Code Blocks (```lang ... ```)
   md = md.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_match, lang, code) => {
