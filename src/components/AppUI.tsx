@@ -90,6 +90,7 @@ export default function AppUI() {
 
   // Authentication State
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authEmail, setAuthEmail] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -245,7 +246,24 @@ export default function AppUI() {
         return;
       }
 
-      // Save account
+      // Check Supabase for existing user
+      try {
+        const { data } = await supabase
+          .from('conclave_users')
+          .select('email')
+          .eq('email', email)
+          .maybeSingle();
+
+        if (data?.email) {
+          setAuthError('An account with this email already exists. Please Sign In.');
+          setAuthLoading(false);
+          return;
+        }
+      } catch {
+        // ignore if table doesn't exist
+      }
+
+      // Save account locally
       accounts[email] = {
         name,
         email,
@@ -254,37 +272,73 @@ export default function AppUI() {
       };
       localStorage.setItem('ac_accounts', JSON.stringify(accounts));
 
+      // Attempt save to Supabase
+      try {
+        await supabase.from('conclave_users').upsert({
+          email,
+          name,
+          password,
+          created_at: Date.now()
+        });
+      } catch {
+        // ignore if offline
+      }
+
       const newUser = { name, email };
       setUser(newUser);
       localStorage.setItem('ac_user', JSON.stringify(newUser));
       setSessions([]);
       setActiveSessionId(null);
     } else {
-      // Login mode
+      // 🔒 STRICT SIGN IN (LOGIN)
       if (!password) {
         setAuthError('Please enter your password.');
         setAuthLoading(false);
         return;
       }
 
-      const existingAccount = accounts[email];
-      if (existingAccount && existingAccount.password) {
-        if (existingAccount.password !== password) {
-          setAuthError('Incorrect password. Please try again.');
-          setAuthLoading(false);
-          return;
+      let existingAccount = accounts[email];
+
+      // Check Supabase conclave_users if not found in local browser
+      if (!existingAccount) {
+        try {
+          const { data, error } = await supabase
+            .from('conclave_users')
+            .select('*')
+            .eq('email', email)
+            .maybeSingle();
+
+          if (data && !error && data.email) {
+            existingAccount = {
+              name: data.name,
+              email: data.email,
+              password: data.password,
+              createdAt: Number(data.created_at) || Date.now()
+            };
+            accounts[email] = existingAccount;
+            localStorage.setItem('ac_accounts', JSON.stringify(accounts));
+          }
+        } catch {
+          // ignore if table doesn't exist
         }
       }
 
-      const userName = existingAccount?.name || email.split('@')[0];
-      const loggedInUser = { name: userName, email };
-
-      // Remember in accounts if not present
+      // STRICT CHECK: IF NOT REGISTERED, DENY ACCESS!
       if (!existingAccount) {
-        accounts[email] = { name: userName, email, password, createdAt: Date.now() };
-        localStorage.setItem('ac_accounts', JSON.stringify(accounts));
+        setAuthError('No account found with this email. Please click "Register" above to create an account.');
+        setAuthLoading(false);
+        return;
       }
 
+      // STRICT CHECK: VERIFY PASSWORD
+      if (existingAccount.password !== password) {
+        setAuthError('Incorrect password. Please try again.');
+        setAuthLoading(false);
+        return;
+      }
+
+      // Successful login
+      const loggedInUser = { name: existingAccount.name, email };
       setUser(loggedInUser);
       localStorage.setItem('ac_user', JSON.stringify(loggedInUser));
       await loadUserSessions(email);
@@ -551,11 +605,37 @@ export default function AppUI() {
                 </p>
               </div>
 
-              {/* Error Alert */}
+              {/* Error Alert with 1-click switcher */}
               {authError && (
-                <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-center gap-2 font-sans">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{authError}</span>
+                <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex flex-col gap-1.5 font-sans">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{authError}</span>
+                  </div>
+                  {authError.includes('Register') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('register');
+                        setAuthError(null);
+                      }}
+                      className="text-gold hover:underline font-semibold text-left text-xs pl-6 cursor-pointer"
+                    >
+                      &rarr; Click here to Register with this email
+                    </button>
+                  )}
+                  {authError.includes('Sign In') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('login');
+                        setAuthError(null);
+                      }}
+                      className="text-gold hover:underline font-semibold text-left text-xs pl-6 cursor-pointer"
+                    >
+                      &rarr; Click here to Sign In
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -579,6 +659,8 @@ export default function AppUI() {
                     required
                     name="email"
                     type="email"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
                     placeholder="you@example.com"
                     className="w-full px-4 py-2.5 rounded-xl bg-surface-dark border border-border outline-none focus:ring-2 focus:ring-gold/50 transition-all font-sans text-sm text-foreground placeholder:text-foreground/40"
                   />
