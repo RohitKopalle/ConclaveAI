@@ -2,7 +2,30 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Loader2, BrainCircuit, Sparkles, CheckCircle2, User, TerminalSquare, Send, MessageSquarePlus, LogOut, MessageSquare, ArrowRight, ChevronLeft, ChevronRight, LogIn, UserPlus, Compass } from 'lucide-react';
+import {
+  Loader2,
+  BrainCircuit,
+  Sparkles,
+  CheckCircle2,
+  User,
+  TerminalSquare,
+  Send,
+  MessageSquarePlus,
+  LogOut,
+  MessageSquare,
+  ArrowRight,
+  ChevronLeft,
+  ChevronRight,
+  LogIn,
+  UserPlus,
+  Compass,
+  Eye,
+  EyeOff,
+  Zap,
+  Scale,
+  BookOpen,
+  AlertCircle
+} from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 const PIPELINE_STEPS = [
@@ -13,9 +36,12 @@ const PIPELINE_STEPS = [
   { id: 'v3', label: 'Chairman: Synthesis (V3)', icon: CheckCircle2 }
 ];
 
+type DepthMode = 'brief' | 'moderate' | 'detailed';
+
 type Turn = {
   id: string;
   prompt: string;
+  depth?: DepthMode;
   v1: string;
   eval1: string;
   change1: string;
@@ -43,20 +69,36 @@ type ConclaveSessionRow = {
   turns: Turn[];
 };
 
+interface StoredAccount {
+  name: string;
+  email: string;
+  password?: string;
+  createdAt: number;
+}
+
 export default function AppUI() {
   const [mounted, setMounted] = useState(false);
   const [user, setUser] = useState<{ name: string; email: string } | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
+  // Deliberation Input State
   const [input, setInput] = useState('');
+  const [responseDepth, setResponseDepth] = useState<DepthMode>('moderate');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [authMode, setAuthMode] = useState<'signin' | 'register'>('signin');
+
+  // Authentication State
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+
   const endRef = useRef<HTMLDivElement>(null);
 
-  // Initialize from saved user session
+  // Initialize from saved session
   useEffect(() => {
     async function initAuth() {
       const savedUser = localStorage.getItem('ac_user');
@@ -66,7 +108,7 @@ export default function AppUI() {
           setUser(u);
           await loadUserSessions(u.email);
         } catch {
-          // ignore corrupted storage
+          // ignore corrupted local data
         }
       }
       setMounted(true);
@@ -77,6 +119,7 @@ export default function AppUI() {
   const loadUserSessions = async (email: string) => {
     setIsLoadingHistory(true);
     try {
+      // 1. Try Supabase
       const { data } = await supabase
         .from('conclave_sessions')
         .select('*')
@@ -92,49 +135,162 @@ export default function AppUI() {
         }));
         setSessions(loadedSessions);
         setActiveSessionId(loadedSessions[0].id);
-      } else {
-        setSessions([]);
-        setActiveSessionId(null);
+        // Backup locally
+        localStorage.setItem(`ac_sessions_${email}`, JSON.stringify(loadedSessions));
+        return;
       }
     } catch {
-      // offline or network error fallback
+      // Supabase unavailable, fallback to local backup
     } finally {
       setIsLoadingHistory(false);
     }
+
+    // 2. Fallback to Local Backup
+    try {
+      const cached = localStorage.getItem(`ac_sessions_${email}`);
+      if (cached) {
+        const parsed: Session[] = JSON.parse(cached);
+        if (parsed.length > 0) {
+          setSessions(parsed);
+          setActiveSessionId(parsed[0].id);
+        }
+      }
+    } catch {
+      // ignore
+    }
   };
 
-  // Save changes to Supabase (Only when stream is completed to prevent rate limiting)
+  // Save changes to Supabase & LocalStorage (Only when stream is completed)
   useEffect(() => {
     if (mounted && user && !isProcessing && sessions.length > 0) {
-      const active = sessions.find(s => s.id === activeSessionId);
+      // Save local backup immediately
+      localStorage.setItem(`ac_sessions_${user.email}`, JSON.stringify(sessions));
+
+      // Sync active session with Supabase
+      const active = sessions.find((s) => s.id === activeSessionId);
       if (active && user.email !== 'guest@conclave.local') {
-        supabase.from('conclave_sessions').upsert({
-          id: active.id,
-          user_email: user.email,
-          title: active.title,
-          updated_at: active.updatedAt,
-          turns: active.turns
-        }).then(({ error }) => { if (error) console.warn("Supabase sync error:", error); });
+        supabase
+          .from('conclave_sessions')
+          .upsert({
+            id: active.id,
+            user_email: user.email,
+            title: active.title,
+            updated_at: active.updatedAt,
+            turns: active.turns
+          })
+          .then(({ error }) => {
+            if (error) console.warn('Supabase sync note:', error.message);
+          });
       }
     }
   }, [sessions, activeSessionId, mounted, user, isProcessing]);
 
-  const activeSession = sessions.find(s => s.id === activeSessionId) || null;
+  // Active Session & Turn Helpers
+  const activeSession = sessions.find((s) => s.id === activeSessionId) || null;
   const turns = activeSession?.turns || [];
+  const activeTurn = turns.length > 0 ? turns[turns.length - 1] : null;
 
+  // Authentication Handlers
   const handleAuthSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    setAuthError(null);
+    setAuthLoading(true);
+
     const fd = new FormData(e.currentTarget);
     const email = ((fd.get('email') as string) || '').trim().toLowerCase();
-    if (!email) return;
+    const password = ((fd.get('password') as string) || '').trim();
 
-    const rawName = (fd.get('name') as string) || '';
-    const name = rawName.trim() || email.split('@')[0];
-    const u = { name, email };
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      setAuthError('Please enter a valid email address.');
+      setAuthLoading(false);
+      return;
+    }
 
-    setUser(u);
-    localStorage.setItem('ac_user', JSON.stringify(u));
-    await loadUserSessions(email);
+    // Get stored accounts
+    let accounts: Record<string, StoredAccount> = {};
+    try {
+      const rawAccounts = localStorage.getItem('ac_accounts');
+      if (rawAccounts) accounts = JSON.parse(rawAccounts);
+    } catch {
+      accounts = {};
+    }
+
+    if (authMode === 'register') {
+      const name = ((fd.get('name') as string) || '').trim();
+      const confirmPassword = ((fd.get('confirmPassword') as string) || '').trim();
+
+      if (!name) {
+        setAuthError('Please enter your full name.');
+        setAuthLoading(false);
+        return;
+      }
+
+      if (password.length < 6) {
+        setAuthError('Password must be at least 6 characters.');
+        setAuthLoading(false);
+        return;
+      }
+
+      if (password !== confirmPassword) {
+        setAuthError('Passwords do not match.');
+        setAuthLoading(false);
+        return;
+      }
+
+      if (accounts[email]) {
+        setAuthError('An account with this email already exists. Please Sign In.');
+        setAuthLoading(false);
+        return;
+      }
+
+      // Save account
+      accounts[email] = {
+        name,
+        email,
+        password,
+        createdAt: Date.now()
+      };
+      localStorage.setItem('ac_accounts', JSON.stringify(accounts));
+
+      const newUser = { name, email };
+      setUser(newUser);
+      localStorage.setItem('ac_user', JSON.stringify(newUser));
+      setSessions([]);
+      setActiveSessionId(null);
+    } else {
+      // Login mode
+      if (!password) {
+        setAuthError('Please enter your password.');
+        setAuthLoading(false);
+        return;
+      }
+
+      const existingAccount = accounts[email];
+      if (existingAccount && existingAccount.password) {
+        if (existingAccount.password !== password) {
+          setAuthError('Incorrect password. Please try again.');
+          setAuthLoading(false);
+          return;
+        }
+      }
+
+      const userName = existingAccount?.name || email.split('@')[0];
+      const loggedInUser = { name: userName, email };
+
+      // Remember in accounts if not present
+      if (!existingAccount) {
+        accounts[email] = { name: userName, email, password, createdAt: Date.now() };
+        localStorage.setItem('ac_accounts', JSON.stringify(accounts));
+      }
+
+      setUser(loggedInUser);
+      localStorage.setItem('ac_user', JSON.stringify(loggedInUser));
+      await loadUserSessions(email);
+    }
+
+    setAuthLoading(false);
   };
 
   const handleGuestEntry = () => {
@@ -148,6 +304,7 @@ export default function AppUI() {
     setUser(null);
     setSessions([]);
     setActiveSessionId(null);
+    setAuthError(null);
     localStorage.removeItem('ac_user');
   };
 
@@ -158,7 +315,7 @@ export default function AppUI() {
       updatedAt: Date.now(),
       turns: []
     };
-    setSessions(prev => [newSession, ...prev]);
+    setSessions((prev) => [newSession, ...prev]);
     setActiveSessionId(newSession.id);
   };
 
@@ -170,7 +327,7 @@ export default function AppUI() {
     if (!currentSessionId || !activeSession) {
       const newSession: Session = {
         id: Date.now().toString(),
-        title: input.slice(0, 30) + '...',
+        title: input.slice(0, 32) + '...',
         updatedAt: Date.now(),
         turns: []
       };
@@ -178,30 +335,43 @@ export default function AppUI() {
       currentSessionId = newSession.id;
       setActiveSessionId(currentSessionId);
     } else if (activeSession.turns.length === 0) {
-      // update title of empty session
-      setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title: input.slice(0, 30) + '...' } : s));
+      setSessions((prev) =>
+        prev.map((s) => (s.id === currentSessionId ? { ...s, title: input.slice(0, 32) + '...' } : s))
+      );
     }
 
     const promptRef = input;
+    const chosenDepth = responseDepth;
 
     const newTurn: Turn = {
       id: Date.now().toString(),
       prompt: input,
-      v1: '', eval1: '', change1: '', v2: '', eval2: '', change2: '', v3: '',
+      depth: chosenDepth,
+      v1: '',
+      eval1: '',
+      change1: '',
+      v2: '',
+      eval2: '',
+      change2: '',
+      v3: '',
       status: 'running',
       currentStepIndex: 0,
       activeTab: 'v1'
     };
 
-    setSessions(prev => prev.map(s => {
-      if (s.id === currentSessionId) return { ...s, updatedAt: Date.now(), turns: [...s.turns, newTurn] };
-      return s;
-    }));
+    setSessions((prev) =>
+      prev.map((s) => {
+        if (s.id === currentSessionId) {
+          return { ...s, updatedAt: Date.now(), turns: [...s.turns, newTurn] };
+        }
+        return s;
+      })
+    );
 
     setInput('');
     setIsProcessing(true);
 
-    const history = turns.map(t => ({
+    const history = turns.map((t) => ({
       user: t.prompt,
       assistant: t.v3
     }));
@@ -210,10 +380,10 @@ export default function AppUI() {
       const res = await fetch('/api/iterate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: promptRef, history })
+        body: JSON.stringify({ prompt: promptRef, depth: chosenDepth, history })
       });
 
-      if (!res.body) throw new Error('No body');
+      if (!res.body) throw new Error('No response stream received.');
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -228,47 +398,58 @@ export default function AppUI() {
             try {
               const data = JSON.parse(line.slice(6));
 
-              setSessions(prev => prev.map(s => {
-                if (s.id !== currentSessionId) return s;
-                const updatedTurns = [...s.turns];
-                const active = { ...updatedTurns[updatedTurns.length - 1] };
+              setSessions((prev) =>
+                prev.map((s) => {
+                  if (s.id !== currentSessionId) return s;
+                  const updatedTurns = [...s.turns];
+                  const active = { ...updatedTurns[updatedTurns.length - 1] };
 
-                if (data.step === 'v1') {
-                  active.currentStepIndex = 0; active.activeTab = 'v1'; active.v1 += data.chunk;
-                } else if (data.step === 'eval1') {
-                  active.currentStepIndex = 1; active.eval1 += data.chunk;
-                } else if (data.step === 'change1') {
-                  active.change1 += data.chunk;
-                } else if (data.step === 'v2') {
-                  active.currentStepIndex = 2; active.activeTab = 'v2'; active.v2 += data.chunk;
-                } else if (data.step === 'eval2') {
-                  active.currentStepIndex = 3; active.eval2 += data.chunk;
-                } else if (data.step === 'change2') {
-                  active.change2 += data.chunk;
-                } else if (data.step === 'v3') {
-                  active.currentStepIndex = 4; active.activeTab = 'v3'; active.v3 += data.chunk;
-                } else if (data.step === 'completed') {
-                  active.status = 'completed';
-                }
+                  if (data.step === 'v1') {
+                    active.currentStepIndex = 0;
+                    active.activeTab = 'v1';
+                    active.v1 += data.chunk;
+                  } else if (data.step === 'eval1') {
+                    active.currentStepIndex = 1;
+                    active.eval1 += data.chunk;
+                  } else if (data.step === 'change1') {
+                    active.change1 = data.chunk;
+                  } else if (data.step === 'v2') {
+                    active.currentStepIndex = 2;
+                    active.activeTab = 'v2';
+                    active.v2 += data.chunk;
+                  } else if (data.step === 'eval2') {
+                    active.currentStepIndex = 3;
+                    active.eval2 += data.chunk;
+                  } else if (data.step === 'change2') {
+                    active.change2 = data.chunk;
+                  } else if (data.step === 'v3') {
+                    active.currentStepIndex = 4;
+                    active.activeTab = 'v3';
+                    active.v3 += data.chunk;
+                  } else if (data.step === 'completed') {
+                    active.status = 'completed';
+                  }
 
-                updatedTurns[updatedTurns.length - 1] = active;
-                return { ...s, turns: updatedTurns };
-              }));
-
+                  updatedTurns[updatedTurns.length - 1] = active;
+                  return { ...s, turns: updatedTurns };
+                })
+              );
             } catch {
-              // Ignore parse errors from chunking
+              // Ignore parse chunk fragments
             }
           }
         }
       }
     } catch (error) {
       console.error('Error during analysis:', error);
-      setSessions(prev => prev.map(s => {
-        if (s.id !== currentSessionId) return s;
-        const updatedTurns = [...s.turns];
-        updatedTurns[updatedTurns.length - 1].status = 'completed';
-        return { ...s, turns: updatedTurns };
-      }));
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id !== currentSessionId) return s;
+          const updatedTurns = [...s.turns];
+          updatedTurns[updatedTurns.length - 1].status = 'completed';
+          return { ...s, turns: updatedTurns };
+        })
+      );
     } finally {
       setIsProcessing(false);
     }
@@ -280,7 +461,7 @@ export default function AppUI() {
 
   if (!mounted) return null;
 
-  // Streamlined, unified Sign In / Sign Up portal (no redundant intermediate splash screen)
+  // 🚪 FLAWLESS LOGIN & REGISTER PORTAL
   if (!user) {
     return (
       <div className="flex flex-col lg:flex-row h-full w-full bg-surface-dark items-center justify-center p-6 md:p-12 relative overflow-hidden">
@@ -297,35 +478,46 @@ export default function AppUI() {
               <span className="text-gold italic">intelligence engine.</span>
             </h1>
             <p className="text-base sm:text-lg text-foreground/70 font-sans max-w-xl leading-relaxed">
-              AI Conclave is a self-improving deliberation system. Submit complex problems and watch as autonomous agents debate, critique, and synthesize the ultimate resolution.
+              AI Conclave deliberates across autonomous models with real-time web grounding and zero hallucinations.
+              Choose between brief, moderate, or exhaustive deep-dive resolutions.
             </p>
 
-            <div className="grid grid-cols-3 gap-4 pt-4 max-w-lg">
-              <div className="p-3.5 rounded-2xl bg-surface border border-border">
-                <span className="font-serif font-bold text-gold text-lg block">V1</span>
-                <span className="text-xs text-foreground/60 font-sans">Alpha Proposal</span>
+            {/* 3 Response Depth Highlights */}
+            <div className="grid grid-cols-3 gap-3 pt-2 max-w-lg">
+              <div className="p-3 rounded-2xl bg-surface border border-border text-left">
+                <span className="inline-flex items-center gap-1 text-gold text-xs font-semibold mb-1">
+                  <Zap className="w-3.5 h-3.5" /> Brief
+                </span>
+                <p className="text-[11px] text-foreground/60 leading-tight">High-impact summary & core points.</p>
               </div>
-              <div className="p-3.5 rounded-2xl bg-surface border border-border">
-                <span className="font-serif font-bold text-gold text-lg block">V2</span>
-                <span className="text-xs text-foreground/60 font-sans">Beta Critique</span>
+              <div className="p-3 rounded-2xl bg-surface border border-gold/30 bg-gold/5 text-left">
+                <span className="inline-flex items-center gap-1 text-gold text-xs font-semibold mb-1">
+                  <Scale className="w-3.5 h-3.5" /> Moderate
+                </span>
+                <p className="text-[11px] text-foreground/60 leading-tight">Balanced analysis & practical nuance.</p>
               </div>
-              <div className="p-3.5 rounded-2xl bg-surface border border-border">
-                <span className="font-serif font-bold text-gold text-lg block">V3</span>
-                <span className="text-xs text-foreground/60 font-sans">Executive Synthesis</span>
+              <div className="p-3 rounded-2xl bg-surface border border-border text-left">
+                <span className="inline-flex items-center gap-1 text-gold text-xs font-semibold mb-1">
+                  <BookOpen className="w-3.5 h-3.5" /> Detailed
+                </span>
+                <p className="text-[11px] text-foreground/60 leading-tight">Exhaustive architectural breakdown.</p>
               </div>
             </div>
           </div>
 
-          {/* Unified Sign In & Sign Up Card */}
+          {/* Unified Login & Register Card */}
           <div className="lg:col-span-5 w-full">
             <div className="bg-surface border border-border shadow-2xl rounded-3xl p-6 sm:p-8 backdrop-blur-sm relative">
-              {/* Tabs: Sign In vs Sign Up */}
+              {/* Tab Selector */}
               <div className="flex bg-surface-dark p-1 rounded-2xl border border-border mb-6">
                 <button
                   type="button"
-                  onClick={() => setAuthMode('signin')}
+                  onClick={() => {
+                    setAuthMode('login');
+                    setAuthError(null);
+                  }}
                   className={`flex-1 py-2.5 rounded-xl font-medium text-sm flex items-center justify-center gap-2 transition-all ${
-                    authMode === 'signin'
+                    authMode === 'login'
                       ? 'bg-gold text-background shadow-md'
                       : 'text-foreground/60 hover:text-foreground'
                   }`}
@@ -334,29 +526,40 @@ export default function AppUI() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setAuthMode('register')}
+                  onClick={() => {
+                    setAuthMode('register');
+                    setAuthError(null);
+                  }}
                   className={`flex-1 py-2.5 rounded-xl font-medium text-sm flex items-center justify-center gap-2 transition-all ${
                     authMode === 'register'
                       ? 'bg-gold text-background shadow-md'
                       : 'text-foreground/60 hover:text-foreground'
                   }`}
                 >
-                  <UserPlus className="w-4 h-4" /> Sign Up
+                  <UserPlus className="w-4 h-4" /> Register
                 </button>
               </div>
 
               <div>
                 <h2 className="text-2xl font-serif text-foreground mb-1">
-                  {authMode === 'signin' ? 'Welcome Back' : 'Create an Account'}
+                  {authMode === 'login' ? 'Welcome Back' : 'Create an Account'}
                 </h2>
-                <p className="text-xs text-foreground/60 font-sans mb-6">
-                  {authMode === 'signin'
-                    ? 'Enter your email to load your previous deliberations.'
-                    : 'Register with your name and email to save your deliberations.'}
+                <p className="text-xs text-foreground/60 font-sans mb-4">
+                  {authMode === 'login'
+                    ? 'Sign in to access your past deliberations and persistent history.'
+                    : 'Register your profile to preserve and organize multi-agent deliberations.'}
                 </p>
               </div>
 
-              <form onSubmit={handleAuthSubmit} className="space-y-4">
+              {/* Error Alert */}
+              {authError && (
+                <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-center gap-2 font-sans">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{authError}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleAuthSubmit} className="space-y-3.5">
                 {authMode === 'register' && (
                   <div>
                     <label className="text-xs font-medium text-foreground/80 ml-1 block mb-1">Full Name</label>
@@ -364,8 +567,8 @@ export default function AppUI() {
                       required
                       name="name"
                       type="text"
-                      placeholder="e.g. Alex Morgan"
-                      className="w-full px-4 py-3 rounded-xl bg-surface-dark border border-border outline-none focus:ring-2 focus:ring-gold/50 transition-all font-sans text-sm text-foreground placeholder:text-foreground/40"
+                      placeholder="e.g. Rohit Kopalle"
+                      className="w-full px-4 py-2.5 rounded-xl bg-surface-dark border border-border outline-none focus:ring-2 focus:ring-gold/50 transition-all font-sans text-sm text-foreground placeholder:text-foreground/40"
                     />
                   </div>
                 )}
@@ -377,19 +580,74 @@ export default function AppUI() {
                     name="email"
                     type="email"
                     placeholder="you@example.com"
-                    className="w-full px-4 py-3 rounded-xl bg-surface-dark border border-border outline-none focus:ring-2 focus:ring-gold/50 transition-all font-sans text-sm text-foreground placeholder:text-foreground/40"
+                    className="w-full px-4 py-2.5 rounded-xl bg-surface-dark border border-border outline-none focus:ring-2 focus:ring-gold/50 transition-all font-sans text-sm text-foreground placeholder:text-foreground/40"
                   />
                 </div>
 
+                <div>
+                  <label className="text-xs font-medium text-foreground/80 ml-1 block mb-1">Password</label>
+                  <div className="relative">
+                    <input
+                      required
+                      name="password"
+                      type={showPassword ? 'text' : 'password'}
+                      placeholder="••••••••"
+                      className="w-full px-4 py-2.5 pr-10 rounded-xl bg-surface-dark border border-border outline-none focus:ring-2 focus:ring-gold/50 transition-all font-sans text-sm text-foreground placeholder:text-foreground/40"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-foreground/40 hover:text-foreground transition-colors"
+                      tabIndex={-1}
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                {authMode === 'register' && (
+                  <div>
+                    <label className="text-xs font-medium text-foreground/80 ml-1 block mb-1">Confirm Password</label>
+                    <div className="relative">
+                      <input
+                        required
+                        name="confirmPassword"
+                        type={showConfirmPassword ? 'text' : 'password'}
+                        placeholder="••••••••"
+                        className="w-full px-4 py-2.5 pr-10 rounded-xl bg-surface-dark border border-border outline-none focus:ring-2 focus:ring-gold/50 transition-all font-sans text-sm text-foreground placeholder:text-foreground/40"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-foreground/40 hover:text-foreground transition-colors"
+                        tabIndex={-1}
+                      >
+                        {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <button
                   type="submit"
-                  className="w-full bg-foreground text-background py-3.5 rounded-xl font-medium hover:bg-foreground/90 transition-all shadow-md mt-2 flex justify-center items-center gap-2 text-sm"
+                  disabled={authLoading}
+                  className="w-full bg-foreground text-background py-3 rounded-xl font-medium hover:bg-foreground/90 transition-all shadow-md mt-1 flex justify-center items-center gap-2 text-sm disabled:opacity-50"
                 >
-                  {authMode === 'signin' ? 'Sign In & Continue' : 'Create Account'} <ArrowRight className="w-4 h-4" />
+                  {authLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : authMode === 'login' ? (
+                    <>
+                      Sign In & Continue <ArrowRight className="w-4 h-4" />
+                    </>
+                  ) : (
+                    <>
+                      Create Account <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
                 </button>
               </form>
 
-              <div className="mt-6 pt-5 border-t border-border/60 flex flex-col items-center gap-3">
+              <div className="mt-5 pt-4 border-t border-border/60 flex flex-col items-center gap-2.5">
                 <button
                   type="button"
                   onClick={handleGuestEntry}
@@ -405,6 +663,7 @@ export default function AppUI() {
     );
   }
 
+  // 💬 MAIN CHAT & DELIBERATION WORKSPACE
   return (
     <div className="flex w-full h-full bg-surface-dark text-foreground overflow-hidden">
       {/* Session History Sidebar */}
@@ -434,7 +693,7 @@ export default function AppUI() {
                   <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading sessions...
                 </div>
               ) : (
-                sessions.map(s => (
+                sessions.map((s) => (
                   <button
                     key={s.id}
                     onClick={() => setActiveSessionId(s.id)}
@@ -504,7 +763,9 @@ export default function AppUI() {
                     key={step.id + activeTurn.id}
                     initial={{ opacity: 0, x: -10 }}
                     animate={{ opacity: 1, x: 0 }}
-                    className={`relative flex items-start gap-4 ${isPast ? 'opacity-80' : isActive ? 'opacity-100' : 'opacity-30'}`}
+                    className={`relative flex items-start gap-4 ${
+                      isPast ? 'opacity-80' : isActive ? 'opacity-100' : 'opacity-30'
+                    }`}
                   >
                     <div
                       className={`z-10 w-8 h-8 rounded-full flex items-center justify-center bg-surface border-2 transition-all ${
@@ -526,7 +787,11 @@ export default function AppUI() {
               })}
 
               {(activeTurn.status === 'completed' || activeTurn.currentStepIndex > 1) && (
-                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-12 space-y-4 relative z-10 bg-surface">
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="mt-12 space-y-4 relative z-10 bg-surface"
+                >
                   <h3 className="font-serif text-[15px] border-b border-border pb-2 text-foreground/80">Evolution Log</h3>
 
                   {activeTurn.change1 && (
@@ -573,19 +838,30 @@ export default function AppUI() {
                 Start a New <span className="text-gold italic">Conclave</span>
               </h1>
               <p className="text-base text-foreground/60 font-sans max-w-lg mx-auto">
-                Submit a complex, multifaceted problem. Watch as three autonomous agents debate, refine, and synthesize the ultimate resolution.
+                Submit a complex, multifaceted problem. Watch as three autonomous agents debate, refine, and synthesize
+                the ultimate resolution with verified facts.
               </p>
             </div>
           </div>
         ) : (
           <div className="flex-1 overflow-y-auto scroll-smooth py-8 px-4 md:px-8 relative no-scrollbar">
-            <div className="max-w-4xl mx-auto space-y-12 pb-32">
+            <div className="max-w-4xl mx-auto space-y-12 pb-44">
               {turns.map((turn) => (
                 <div key={turn.id} className="space-y-8">
-                  {/* User Message Bubble */}
+                  {/* User Message Bubble with Depth Indicator */}
                   <div className="flex items-start gap-4 justify-end">
-                    <div className="bg-foreground text-background px-6 py-4 rounded-3xl rounded-tr-sm max-w-[85%] shadow-md">
-                      <p className="text-[15px] leading-relaxed whitespace-pre-wrap font-sans">{turn.prompt}</p>
+                    <div className="flex flex-col items-end gap-1.5 max-w-[85%]">
+                      {turn.depth && (
+                        <span className="text-[11px] font-medium text-gold/80 px-2.5 py-0.5 rounded-full bg-gold/10 border border-gold/20 flex items-center gap-1">
+                          {turn.depth === 'brief' && <Zap className="w-3 h-3" />}
+                          {turn.depth === 'moderate' && <Scale className="w-3 h-3" />}
+                          {turn.depth === 'detailed' && <BookOpen className="w-3 h-3" />}
+                          {turn.depth === 'brief' ? 'Brief Deliberation' : turn.depth === 'detailed' ? 'Detailed Deep-Dive' : 'Moderate Deliberation'}
+                        </span>
+                      )}
+                      <div className="bg-foreground text-background px-6 py-4 rounded-3xl rounded-tr-sm shadow-md">
+                        <p className="text-[15px] leading-relaxed whitespace-pre-wrap font-sans">{turn.prompt}</p>
+                      </div>
                     </div>
                     <div className="w-10 h-10 rounded-full bg-foreground/10 flex items-center justify-center shrink-0">
                       <User className="w-5 h-5 text-foreground/70" />
@@ -629,7 +905,10 @@ export default function AppUI() {
                             >
                               {tab === 'v1' ? 'Agent Alpha (V1)' : tab === 'v2' ? 'Agent Beta (V2)' : 'Synthesis (V3)'}
                               {isActive && (
-                                <motion.div layoutId={`tab_${turn.id}`} className="absolute -bottom-3 left-0 right-0 h-0.5 bg-gold" />
+                                <motion.div
+                                  layoutId={`tab_${turn.id}`}
+                                  className="absolute -bottom-3 left-0 right-0 h-0.5 bg-gold"
+                                />
                               )}
                             </button>
                           );
@@ -650,7 +929,7 @@ export default function AppUI() {
                             <div dangerouslySetInnerHTML={{ __html: turn.v1.replace(/\n/g, '<br/>') }} />
                           ) : (
                             <span className="text-foreground/40 animate-pulse flex items-center gap-2">
-                              <Loader2 className="w-4 h-4 animate-spin" /> Alpha is writing...
+                              <Loader2 className="w-4 h-4 animate-spin" /> Alpha is formulating proposal...
                             </span>
                           ))}
                         {turn.activeTab === 'v2' &&
@@ -658,7 +937,7 @@ export default function AppUI() {
                             <div dangerouslySetInnerHTML={{ __html: turn.v2.replace(/\n/g, '<br/>') }} />
                           ) : (
                             <span className="text-foreground/40 animate-pulse flex items-center gap-2">
-                              <Loader2 className="w-4 h-4 animate-spin" /> Beta is refining...
+                              <Loader2 className="w-4 h-4 animate-spin" /> Beta is auditing and refining...
                             </span>
                           ))}
                         {turn.activeTab === 'v3' &&
@@ -666,14 +945,18 @@ export default function AppUI() {
                             <div dangerouslySetInnerHTML={{ __html: turn.v3.replace(/\n/g, '<br/>') }} />
                           ) : (
                             <span className="text-foreground/40 animate-pulse flex items-center gap-2">
-                              <Loader2 className="w-4 h-4 animate-spin" /> Chairman is synthesizing...
+                              <Loader2 className="w-4 h-4 animate-spin" /> Chairman is synthesizing final verdict...
                             </span>
                           ))}
                       </div>
 
                       {/* Embedded Critique if generating next step */}
                       {turn.activeTab === 'v1' && turn.currentStepIndex === 1 && (
-                        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-8 p-5 bg-gold/5 rounded-2xl border border-gold/20 border-l-4 border-l-gold">
+                        <motion.div
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="mt-8 p-5 bg-gold/5 rounded-2xl border border-gold/20 border-l-4 border-l-gold"
+                        >
                           <h4 className="font-serif text-sm font-semibold mb-2 flex items-center gap-2 text-gold">
                             <Sparkles className="w-4 h-4" /> Beta&apos;s Active Critique
                           </h4>
@@ -681,7 +964,11 @@ export default function AppUI() {
                         </motion.div>
                       )}
                       {turn.activeTab === 'v2' && turn.currentStepIndex === 3 && (
-                        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-8 p-5 bg-gold/5 rounded-2xl border border-gold/20 border-l-4 border-l-gold">
+                        <motion.div
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="mt-8 p-5 bg-gold/5 rounded-2xl border border-gold/20 border-l-4 border-l-gold"
+                        >
                           <h4 className="font-serif text-sm font-semibold mb-2 flex items-center gap-2 text-gold">
                             <CheckCircle2 className="w-4 h-4" /> Chairman&apos;s Verification
                           </h4>
@@ -697,9 +984,55 @@ export default function AppUI() {
           </div>
         )}
 
-        {/* Sticky Bottom Input Field */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 md:p-8 bg-gradient-to-t from-surface-dark via-surface-dark to-transparent pt-20">
-          <div className="max-w-4xl mx-auto bg-surface border border-border rounded-3xl shadow-lg p-2 flex flex-col focus-within:ring-2 focus-within:ring-gold/50 transition-all focus-within:border-gold/50">
+        {/* 🎛️ Sticky Bottom Input Area with 3-Option Depth Control */}
+        <div className="absolute bottom-0 left-0 right-0 p-4 md:p-8 bg-gradient-to-t from-surface-dark via-surface-dark to-transparent pt-16">
+          <div className="max-w-4xl mx-auto bg-surface border border-border rounded-3xl shadow-xl p-2.5 flex flex-col focus-within:ring-2 focus-within:ring-gold/50 transition-all focus-within:border-gold/50">
+            {/* 3 User Depth Options Selector */}
+            <div className="flex items-center justify-between px-3 pt-1 pb-2 border-b border-border/40">
+              <span className="text-[11px] font-medium text-foreground/50 uppercase tracking-wider font-mono">
+                Response Mode:
+              </span>
+              <div className="flex items-center gap-1 bg-surface-dark p-0.5 rounded-xl border border-border/60">
+                <button
+                  type="button"
+                  onClick={() => setResponseDepth('brief')}
+                  className={`px-3 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all ${
+                    responseDepth === 'brief'
+                      ? 'bg-gold text-background shadow-sm'
+                      : 'text-foreground/60 hover:text-foreground'
+                  }`}
+                  title="Brief: Direct, concise summary with key bullet points (~250 words)"
+                >
+                  <Zap className="w-3.5 h-3.5" /> Brief
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResponseDepth('moderate')}
+                  className={`px-3 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all ${
+                    responseDepth === 'moderate'
+                      ? 'bg-gold text-background shadow-sm'
+                      : 'text-foreground/60 hover:text-foreground'
+                  }`}
+                  title="Moderate: Balanced, structured analysis without excess (~600 words)"
+                >
+                  <Scale className="w-3.5 h-3.5" /> Moderate
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResponseDepth('detailed')}
+                  className={`px-3 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all ${
+                    responseDepth === 'detailed'
+                      ? 'bg-gold text-background shadow-sm'
+                      : 'text-foreground/60 hover:text-foreground'
+                  }`}
+                  title="Detailed: Comprehensive, deep-dive architectural synthesis (~1200+ words)"
+                >
+                  <BookOpen className="w-3.5 h-3.5" /> Detailed
+                </button>
+              </div>
+            </div>
+
+            {/* Input Textarea */}
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -710,13 +1043,24 @@ export default function AppUI() {
                 }
               }}
               disabled={isProcessing}
-              placeholder={isProcessing ? "Agents are deliberating..." : "Ask a follow-up or enter a new complex scenario..."}
-              className="w-full bg-transparent p-4 min-h-[50px] max-h-[200px] outline-none resize-none font-sans text-[15px] text-foreground placeholder:text-foreground/40 disabled:opacity-50"
+              placeholder={
+                isProcessing
+                  ? 'Agents are deliberating with real-time grounding...'
+                  : responseDepth === 'brief'
+                  ? 'Ask a question for a razor-sharp, concise brief...'
+                  : responseDepth === 'detailed'
+                  ? 'Enter a complex scenario for an exhaustive deep dive...'
+                  : 'Enter a problem or question for a balanced deliberation...'
+              }
+              className="w-full bg-transparent p-4 min-h-[50px] max-h-[180px] outline-none resize-none font-sans text-[15px] text-foreground placeholder:text-foreground/40 disabled:opacity-50"
               rows={1}
               autoFocus
             />
-            <div className="flex justify-between items-center px-4 pb-2 pt-1 border-t border-border/40 mt-1">
-              <span className="text-[11px] text-foreground/40 font-mono tracking-wider uppercase">Press Enter to send</span>
+
+            <div className="flex justify-between items-center px-4 pb-1.5 pt-1 border-t border-border/40 mt-1">
+              <span className="text-[11px] text-foreground/40 font-mono tracking-wider uppercase">
+                Press Enter to send
+              </span>
               <button
                 onClick={startAnalysis}
                 disabled={!input.trim() || isProcessing}
