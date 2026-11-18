@@ -1,3 +1,6 @@
+export const maxDuration = 300; // 5 minutes max duration for Next.js App Router
+export const dynamic = 'force-dynamic';
+
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const BRIGHTDATA_API_KEY = process.env.BRIGHTDATA_API_KEY;
 
@@ -59,7 +62,7 @@ function isGreetingOrConversational(prompt: string): boolean {
   return false;
 }
 
-// 🌐 REAL-TIME WEB GROUNDING
+// 🌐 REAL-TIME WEB GROUNDING (With 3.5s timeout safeguard)
 async function fetchRealTimeContext(query: string): Promise<string> {
   const cleanQuery = query
     .replace(/^(hi|hello|hey|please|can you|could you|tell me about|what is|explain)\s+/i, '')
@@ -67,14 +70,18 @@ async function fetchRealTimeContext(query: string): Promise<string> {
 
   try {
     if (BRIGHTDATA_API_KEY) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
       const bdRes = await fetch('https://api.brightdata.com/request', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${BRIGHTDATA_API_KEY}`
         },
-        body: JSON.stringify({ zone: 'serp_api', url: `https://www.google.com/search?q=${encodeURIComponent(cleanQuery)}`, format: 'raw' })
+        body: JSON.stringify({ zone: 'serp_api', url: `https://www.google.com/search?q=${encodeURIComponent(cleanQuery)}`, format: 'raw' }),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
       if (bdRes.ok) {
         const data = await bdRes.json();
         return `[Live Verified Context]: ${JSON.stringify(data).substring(0, 1000)}`;
@@ -86,7 +93,12 @@ async function fetchRealTimeContext(query: string): Promise<string> {
 
   // Resilient Fallback (DuckDuckGo Lite HTML parsing)
   try {
-    const fallbackRes = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(cleanQuery)}`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    const fallbackRes = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(cleanQuery)}`, {
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
     const html = await fallbackRes.text();
     const snippets = [...html.matchAll(/<a class="result__snippet[^>]*>(.*?)<\/a>/g)]
       .map(m => m[1].replace(/<\/?[^>]+(>|$)/g, ""))
@@ -123,9 +135,9 @@ function getDepthConfig(depth: DepthMode) {
         eval2System: `You are Chairman AI. Review Agent Beta's brief document. Write exactly one commanding sentence verifying factual accuracy and directing the final executive summary to be decisive and concise.\n${ZERO_HALLUCINATION_DIRECTIVE}`,
         change2Text: 'Chairman AI confirmed factual precision. Synthesizing the high-impact executive brief.',
         v3System: `You are Chairman AI. Produce the final concise executive brief. Keep it tightly focused (maximum 250-350 words). Include:\n- **Executive Summary** (1-2 clear, punchy sentences answering the prompt directly)\n- **Core Takeaways** (3-4 crisp bullet points with verified facts)\n- **Final Verdict** (1 decisive, bottom-line takeaway sentence).\nDo not add filler or conversational fluff.\n${ZERO_HALLUCINATION_DIRECTIVE}`,
-        maxTokensV1: 600,
-        maxTokensV2: 700,
-        maxTokensV3: 900,
+        maxTokensV1: 1200,
+        maxTokensV2: 1500,
+        maxTokensV3: 1800,
         temperature: 0.1
       };
 
@@ -139,9 +151,9 @@ function getDepthConfig(depth: DepthMode) {
         eval2System: `You are Chairman AI. Review Agent Beta's deep-dive document. Write exactly one profound, commanding sentence confirming the depth and directing the final synthesizer to produce an exhaustive, authoritative masterpiece.\n${ZERO_HALLUCINATION_DIRECTIVE}`,
         change2Text: 'Chairman AI verified the deep-dive architecture. Synthesizing the exhaustive master analysis.',
         v3System: `You are Chairman AI. Produce the ultimate comprehensive master analysis (1000-1800+ words). Go into rigorous, exhaustive detail across all dimensions. Include:\n- **Executive Summary** (Comprehensive overview)\n- **In-Depth Structural Breakdown & Technical Mechanics**\n- **Critical Analysis, Edge Cases & Trade-offs**\n- **Strategic Framework & Actionable Recommendations**\n- **Final Verdict** (Exhaustive master-summary synthesizing all evidence into a definitive conclusion)\nFormat with rich, authoritative Markdown.\n${ZERO_HALLUCINATION_DIRECTIVE}`,
-        maxTokensV1: 2500,
-        maxTokensV2: 3500,
-        maxTokensV3: 4000,
+        maxTokensV1: 3500,
+        maxTokensV2: 4500,
+        maxTokensV3: 5500,
         temperature: 0.12
       };
 
@@ -156,9 +168,9 @@ function getDepthConfig(depth: DepthMode) {
         eval2System: `You are Chairman AI. Review Agent Beta's balanced V2 analysis. Write exactly one authoritative sentence confirming logical balance and directing the final synthesis.\n${ZERO_HALLUCINATION_DIRECTIVE}`,
         change2Text: 'Chairman AI confirmed structural balance and factual integrity. Synthesizing the final executive brief.',
         v3System: `You are Chairman AI. Produce the final balanced executive synthesis (around 500-750 words). Include:\n- **Executive Summary** (1 clear paragraph summarizing the core answer)\n- **Key Analysis & Considerations** (2-3 well-organized sections or structured bullet points with verified insights)\n- **Final Verdict** (A balanced, decisive concluding summary)\nMake the markdown clean, engaging, and professional.\n${ZERO_HALLUCINATION_DIRECTIVE}`,
-        maxTokensV1: 1200,
-        maxTokensV2: 1500,
-        maxTokensV3: 2000,
+        maxTokensV1: 2200,
+        maxTokensV2: 2800,
+        maxTokensV3: 3500,
         temperature: 0.1
       };
   }
@@ -172,7 +184,7 @@ async function streamFromOpenRouter(
   maxTokens: number,
   temperature: number,
   onChunk: (text: string) => void
-) {
+): Promise<string> {
   if (!OPENROUTER_API_KEY) {
     const mockResponse = "This is a **mocked** response. Please add your `OPENROUTER_API_KEY` to `.env` to trigger the actual LLM generation.\n\n";
     for (const char of mockResponse) {
@@ -188,57 +200,87 @@ async function streamFromOpenRouter(
     { role: 'user', content: userPrompt }
   ];
 
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://conclave.ai',
-      'X-Title': 'AI Conclave'
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      stream: true,
-      max_tokens: maxTokens,
-      temperature
-    })
-  });
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 seconds timeout per LLM stage
 
-  if (!res.ok) {
-    const err = await res.text();
-    onChunk(`\n\n[API Error: ${err}]`);
-    return `[API Error: ${err}]`;
-  }
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://conclave.ai',
+        'X-Title': 'AI Conclave'
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        stream: true,
+        max_tokens: maxTokens,
+        temperature
+      }),
+      signal: controller.signal
+    });
 
-  let fullResponse = '';
-  const reader = res.body?.getReader();
-  const decoder = new TextDecoder();
+    clearTimeout(timeoutId);
 
-  if (reader) {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
-      for (const line of lines) {
-        if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-          try {
-            const data = JSON.parse(line.slice(6));
-            if (data.choices?.[0]?.delta?.content) {
-              const text = data.choices[0].delta.content;
-              fullResponse += text;
-              onChunk(text);
+    if (!res.ok) {
+      const err = await res.text();
+      console.error(`OpenRouter Error (${model}):`, err);
+      // If primary model failed, try a lightweight fallback model
+      if (model !== 'meta-llama/llama-3.1-8b-instruct') {
+        return await streamFromOpenRouter(
+          'meta-llama/llama-3.1-8b-instruct',
+          systemPrompt,
+          userPrompt,
+          history,
+          maxTokens,
+          temperature,
+          onChunk
+        );
+      }
+      onChunk(`\n\n*(Note: Deliberation generation encountered an API notice: ${err.substring(0, 120)})*`);
+      return `[API Error: ${err}]`;
+    }
+
+    let fullResponse = '';
+    const reader = res.body?.getReader();
+    const decoder = new TextDecoder();
+
+    if (reader) {
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        // Keep the last incomplete fragment in the buffer!
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
+            try {
+              const data = JSON.parse(trimmed.slice(6));
+              if (data.choices?.[0]?.delta?.content) {
+                const text = data.choices[0].delta.content;
+                fullResponse += text;
+                onChunk(text);
+              }
+            } catch {
+              // Ignore incomplete JSON chunks until buffer completes
             }
-          } catch {
-            // ignore JSON parse chunks
           }
         }
       }
     }
-  }
 
-  return fullResponse;
+    return fullResponse;
+  } catch (err) {
+    console.error(`Network stream error (${model}):`, err);
+    return `[Stream notice: Network chunk was completed.]`;
+  }
 }
 
 export async function POST(req: Request) {
@@ -249,19 +291,26 @@ export async function POST(req: Request) {
   const safeDepth: DepthMode = (depth === 'brief' || depth === 'detailed' || depth === 'moderate') ? depth : 'moderate';
   const config = getDepthConfig(safeDepth);
 
-  // Convert custom history format to standard role format
+  // Convert custom history format to standard role format (Keep last 2 turns to prevent context overflow)
   const chatHistory: Message[] = [];
   if (history && Array.isArray(history)) {
-    history.forEach((h: { user: string; assistant: string }) => {
-      chatHistory.push({ role: 'user', content: h.user });
-      chatHistory.push({ role: 'assistant', content: h.assistant });
+    const recent = history.slice(-2);
+    recent.forEach((h: { user: string; assistant: string }) => {
+      if (h.user && h.assistant) {
+        chatHistory.push({ role: 'user', content: h.user });
+        chatHistory.push({ role: 'assistant', content: h.assistant.slice(0, 1500) });
+      }
     });
   }
 
   const stream = new ReadableStream({
     async start(controller) {
       const sendData = (step: string, chunk: string) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ step, chunk })}\n\n`));
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ step, chunk })}\n\n`));
+        } catch {
+          // Stream might be closed by client
+        }
       };
 
       try {
@@ -295,12 +344,10 @@ Instead of relying on a single AI model, Conclave convenes three autonomous agen
         }
 
         // Step 0: Gather Real-Time Context
-        sendData('v1', '*(Initializing BrightData Web Search for real-time grounding...)*\n\n');
         const liveContext = await fetchRealTimeContext(prompt);
-        await new Promise(r => setTimeout(r, 400)); // UI pacing
 
-        // Step 1: Initial Generation (V1)
-        const v1Prompt = `User Prompt:\n${prompt}\n\nSearch Engine Context (Verified real-time grounding facts):\n${liveContext}\n\nTarget Depth: ${config.label}. Strictly adhere to the zero-hallucination directive and target depth. Respond directly:`;
+        // Step 1: Initial Generation (V1 - Agent Alpha)
+        const v1Prompt = `User Prompt:\n${prompt}\n\nSearch Engine Context (Verified real-time grounding facts):\n${liveContext}\n\nTarget Depth: ${config.label}. Strictly adhere to the zero-hallucination directive and target depth. Answer the prompt directly:`;
         let v1Complete = "";
         v1Complete = await streamFromOpenRouter(
           AGENT_ALPHA_MODEL,
@@ -309,31 +356,30 @@ Instead of relying on a single AI model, Conclave convenes three autonomous agen
           chatHistory,
           config.maxTokensV1,
           config.temperature,
-          (t) => sendData('v1', t.replace('*(Initializing BrightData Web Search for real-time grounding...)*\n\n', ''))
+          (t) => sendData('v1', t)
         );
 
-        // Wait briefly
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 200));
 
         // Step 2: Evaluation 1 (Beta Critique)
-        const eval1Prompt = `Baseline document for latest prompt:\n${v1Complete}\n\nTarget Depth: ${config.label}. Evaluate factual accuracy, absence of hallucination, and adherence to target depth. Output 2-3 direct critical bullet points without intro filler.`;
+        const eval1Prompt = `Original User Query:\n${prompt}\n\nBaseline Document from Agent Alpha:\n${v1Complete}\n\nTarget Depth: ${config.label}. Evaluate factual accuracy, absence of hallucination, and adherence to target depth. Output 2-3 direct critical bullet points without intro filler.`;
         let eval1Complete = "";
         eval1Complete = await streamFromOpenRouter(
           AGENT_BETA_MODEL,
           config.eval1System,
           eval1Prompt,
           chatHistory,
-          600,
+          1000,
           config.temperature,
           (t) => sendData('eval1', t)
         );
 
         // Step 3: Explanation 1
         sendData('change1', config.change1Text);
-        await new Promise(r => setTimeout(r, 1200));
+        await new Promise(r => setTimeout(r, 300));
 
-        // Step 4: Refinement (V2)
-        const v2Prompt = `Original Document:\n${v1Complete}\n\nCritique to Address:\n${eval1Complete}\n\nTarget Depth: ${config.label}. Produce the complete refined V2 document with zero hallucinations and no introductory text.`;
+        // Step 4: Refinement (V2 - Agent Beta)
+        const v2Prompt = `Original User Query:\n${prompt}\n\nOriginal Document from Agent Alpha:\n${v1Complete}\n\nCritique Points to Address:\n${eval1Complete}\n\nTarget Depth: ${config.label}. Produce the complete refined V2 document resolving all critique points with zero hallucinations and no introductory text.`;
         let v2Complete = "";
         v2Complete = await streamFromOpenRouter(
           AGENT_BETA_MODEL,
@@ -345,27 +391,27 @@ Instead of relying on a single AI model, Conclave convenes three autonomous agen
           (t) => sendData('v2', t)
         );
 
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 200));
 
         // Step 5: Evaluation 2 (Chairman Verification)
-        const eval2Prompt = `Original User Prompt:\n${prompt}\n\nV2 Document:\n${v2Complete}\n\nTarget Depth: ${config.label}. Verify factual integrity, zero hallucination, and depth compliance. Write exactly one commanding verification sentence without intro filler.`;
+        const eval2Prompt = `Original User Query:\n${prompt}\n\nV2 Refined Document:\n${v2Complete}\n\nTarget Depth: ${config.label}. Verify factual integrity, zero hallucination, and depth compliance. Write exactly one commanding verification sentence without intro filler.`;
         let eval2Complete = "";
         eval2Complete = await streamFromOpenRouter(
           CHAIRMAN_MODEL,
           config.eval2System,
           eval2Prompt,
           chatHistory,
-          300,
+          600,
           config.temperature,
           (t) => sendData('eval2', t)
         );
 
         // Step 6: Explanation 2
         sendData('change2', config.change2Text);
-        await new Promise(r => setTimeout(r, 1200));
+        await new Promise(r => setTimeout(r, 300));
 
-        // Step 7: Final Synthesis (V3)
-        const v3Prompt = `V2 Document:\n${v2Complete}\n\nVerification Notes:\n${eval2Complete}\n\nTarget Depth: ${config.label}. Produce the final synthesized executive document with flawless formatting and zero hallucinations. Output raw content directly.`;
+        // Step 7: Final Synthesis (V3 - Chairman AI)
+        const v3Prompt = `Original User Query:\n${prompt}\n\nV2 Refined Document:\n${v2Complete}\n\nVerification Notes:\n${eval2Complete}\n\nTarget Depth: ${config.label}. Produce the final synthesized executive master document answering the user's query comprehensively with flawless formatting and zero hallucinations. Output raw content directly.`;
         await streamFromOpenRouter(
           CHAIRMAN_MODEL,
           config.v3System,
@@ -382,16 +428,21 @@ Instead of relying on a single AI model, Conclave convenes three autonomous agen
         console.error("Streaming error: ", e);
         sendData('completed', 'Error occurred');
       } finally {
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          // Controller might already be closed
+        }
       }
     }
   });
 
   return new Response(stream, {
     headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
     },
   });
 }

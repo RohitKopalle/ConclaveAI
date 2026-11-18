@@ -461,16 +461,42 @@ export default function AppUI() {
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
+      let streamBuffer = '';
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-
-        const lines = decoder.decode(value).split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
+        if (done) {
+          // Process any final remaining buffer fragment
+          if (streamBuffer.trim().startsWith('data: ')) {
             try {
-              const data = JSON.parse(line.slice(6));
+              const data = JSON.parse(streamBuffer.trim().slice(6));
+              if (data.step === 'completed') {
+                setSessions((prev) =>
+                  prev.map((s) => {
+                    if (s.id !== currentSessionId) return s;
+                    const updatedTurns = [...s.turns];
+                    updatedTurns[updatedTurns.length - 1].status = 'completed';
+                    return { ...s, turns: updatedTurns };
+                  })
+                );
+              }
+            } catch {
+              // ignore
+            }
+          }
+          break;
+        }
+
+        streamBuffer += decoder.decode(value, { stream: true });
+        const lines = streamBuffer.split('\n');
+        // Keep the incomplete line segment in the buffer for the next network chunk!
+        streamBuffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(trimmed.slice(6));
 
               setSessions((prev) =>
                 prev.map((s) => {
@@ -509,7 +535,7 @@ export default function AppUI() {
                 })
               );
             } catch {
-              // Ignore parse chunk fragments
+              // Ignore incomplete fragments until next chunk arrives
             }
           }
         }
