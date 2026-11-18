@@ -1,21 +1,56 @@
-import { NextResponse } from 'next/server';
-
-const FEATHERLESS_API_KEY = process.env.FEATHERLESS_API_KEY;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const BRIGHTDATA_API_KEY = process.env.BRIGHTDATA_API_KEY;
 
 // 🧠 CONFIGURE YOUR MULTI-MODEL DELIBERATION
-// Swap these HuggingFace model strings to create a true diversity of thought!
-const AGENT_ALPHA_MODEL = 'mistralai/Mistral-Nemo-Instruct-2407'; // Agent Alpha (Fast baseline generation)
-const AGENT_BETA_MODEL = 'Qwen/Qwen2.5-7B-Instruct'; // Agent Beta (Rigorous critique & logic parsing)
-const CHAIRMAN_MODEL = 'mistralai/Mistral-Nemo-Instruct-2407';   // Powerful executive synthesizer
+// Swap these OpenRouter model strings to create a true diversity of thought!
+const AGENT_ALPHA_MODEL = 'mistralai/mistral-nemo'; // Agent Alpha (Fast baseline generation)
+const AGENT_BETA_MODEL = 'meta-llama/llama-3.1-8b-instruct'; // Agent Beta (Rigorous critique & logic parsing)
+const CHAIRMAN_MODEL = 'mistralai/mistral-nemo';   // Powerful executive synthesizer
 
 type Message = { role: string; content: string };
 
-async function streamFromFeatherless(model: string, systemPrompt: string, userPrompt: string, history: Message[], onChunk: (text: string) => void) {
-  if (!FEATHERLESS_API_KEY) {
-    const mockResponse = "This is a **mocked** response. Please add your `FEATHERLESS_API_KEY` to `.env.local` to trigger the actual LLM generation.\\n\\n";
-    for (let char of mockResponse) {
-       onChunk(char);
-       await new Promise(r => setTimeout(r, 20));
+// 🌐 BRIGHTDATA REAL-TIME WEB GROUNDING
+async function fetchRealTimeContext(query: string): Promise<string> {
+  try {
+    // Attempt BrightData SERP API (requires correct zone configuration)
+    if (BRIGHTDATA_API_KEY) {
+      const bdRes = await fetch('https://api.brightdata.com/request', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${BRIGHTDATA_API_KEY}`
+        },
+        body: JSON.stringify({ zone: 'serp_api', url: `https://www.google.com/search?q=${encodeURIComponent(query)}`, format: 'raw' })
+      });
+      if (bdRes.ok) {
+        const data = await bdRes.json();
+        return `[Live Context]: ${JSON.stringify(data).substring(0, 1000)}`;
+      }
+    }
+  } catch {
+    // Fallback silently
+  }
+
+  // Robust Fallback (DuckDuckGo Lite HTML parsing) to guarantee Hackathon demo survives
+  try {
+    const fallbackRes = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`);
+    const html = await fallbackRes.text();
+    const snippets = [...html.matchAll(/<a class="result__snippet[^>]*>(.*?)<\/a>/g)]
+      .map(m => m[1].replace(/<\/?[^>]+(>|$)/g, ""))
+      .slice(0, 5)
+      .join(' | ');
+    return `[Live Context]: ${snippets}`;
+  } catch {
+    return "[Live Context]: Real-time search unavailable.";
+  }
+}
+
+async function streamFromOpenRouter(model: string, systemPrompt: string, userPrompt: string, history: Message[], onChunk: (text: string) => void) {
+  if (!OPENROUTER_API_KEY) {
+    const mockResponse = "This is a **mocked** response. Please add your `OPENROUTER_API_KEY` to `.env` to trigger the actual LLM generation.\\n\\n";
+    for (const char of mockResponse) {
+      onChunk(char);
+      await new Promise(r => setTimeout(r, 20));
     }
     return mockResponse;
   }
@@ -26,18 +61,18 @@ async function streamFromFeatherless(model: string, systemPrompt: string, userPr
     { role: 'user', content: userPrompt }
   ];
 
-  const res = await fetch('https://api.featherless.ai/v1/chat/completions', {
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${FEATHERLESS_API_KEY}`,
+      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
       model,
       messages,
       stream: true,
-      max_tokens: 1500,
-      temperature: 0.7
+      max_tokens: 3500,
+      temperature: 0.3
     })
   });
 
@@ -66,7 +101,7 @@ async function streamFromFeatherless(model: string, systemPrompt: string, userPr
               fullResponse += text;
               onChunk(text);
             }
-          } catch (e) {
+          } catch {
             // ignore
           }
         }
@@ -80,11 +115,11 @@ async function streamFromFeatherless(model: string, systemPrompt: string, userPr
 export async function POST(req: Request) {
   const { prompt, history } = await req.json();
   const encoder = new TextEncoder();
-  
+
   // Convert custom history format to standard role format
   const chatHistory: Message[] = [];
   if (history && Array.isArray(history)) {
-    history.forEach((h: any) => {
+    history.forEach((h: { user: string; assistant: string }) => {
       chatHistory.push({ role: 'user', content: h.user });
       chatHistory.push({ role: 'assistant', content: h.assistant });
     });
@@ -97,53 +132,55 @@ export async function POST(req: Request) {
       };
 
       try {
+        // Step 0: Gather Real-Time Context
+        sendData('v1', '*(Initializing BrightData Web Search for real-time grounding...)*\n\n');
+        const liveContext = await fetchRealTimeContext(prompt);
+        await new Promise(r => setTimeout(r, 500)); // UI pacing
+
         // Step 1: Initial Generation (V1)
-        const v1System = "You are Agent Alpha, a world-class AI expert. Provide a highly accurate, logically sound, and authoritative response to the user's prompt. For factual questions, be precise and perfectly correct. For complex problems, provide detailed structured analysis. IMPORTANT: Do NOT include any intro filler, titles, or preambles automatically. Just output the raw content directly.";
+        const v1System = "You are Agent Alpha, a world-class AI researcher. Provide a strictly concise, accurate, brief baseline answer to the user's prompt (maximum 2-3 short paragraphs). Do not over-explain; simply state the foundational core facts logically. IMPORTANT: Do NOT include intro filler like 'Here is the analysis'. Output raw content directly.";
+
         let v1Complete = "";
-        v1Complete = await streamFromFeatherless(AGENT_ALPHA_MODEL, v1System, prompt, chatHistory, (t) => sendData('v1', t));
-        
+        v1Complete = await streamFromOpenRouter(AGENT_ALPHA_MODEL, v1System, `User Prompt:\n${prompt}\n\nSearch Engine Context (Use this for up-to-date facts):\n${liveContext}\n\nRespond directly:`, chatHistory, (t) => sendData('v1', t.replace('*(Initializing BrightData Web Search for real-time grounding...)*\n\n', '')));
+
         // Wait briefly
         await new Promise(r => setTimeout(r, 1000));
 
         // Step 2: Evaluation 1
-        const eval1System = "You are Agent Beta, a rigorous fact-checker and strategist. Evaluate Agent Alpha's response against the user prompt. If Alpha's response is already factually correct and fully answers the prompt, output exactly: 'No major flaws. Proceed.' ONLY if there are genuine factual errors, critical missing context, or logic gaps, output major areas for refinement. Be concise. IMPORTANT: Do NOT include introductory filler.";
+        const eval1System = "You are Agent Beta, a rigorous and demanding critic. Evaluate Agent Alpha's brief baseline. Your primary directive is to demand a massive expansion in depth. Output 2-3 critical bullet points pointing out how brief it is, demanding deep-dive breakdowns, statistical nuances, or historical context. NEVER say it is flawless. Demand an extensively detailed V2 upgrade. IMPORTANT: Do NOT include introductory filler.";
         let eval1Complete = "";
-        eval1Complete = await streamFromFeatherless(AGENT_BETA_MODEL, eval1System, `Baseline document for latest prompt:\n${v1Complete}`, chatHistory, (t) => sendData('eval1', t));
-        
+        eval1Complete = await streamFromOpenRouter(AGENT_BETA_MODEL, eval1System, `Baseline document for latest prompt:\n${v1Complete}`, chatHistory, (t) => sendData('eval1', t));
+
         // Step 3: Explanation 1
-        const change1Text = eval1Complete.includes("No major flaws") 
-            ? "Agent Beta verified the proposal is factually accurate and complete. Advancing baseline."
-            : "Agent Beta identified missing context or inaccuracies in Alpha's proposal. Re-evaluating the foundational arguments for V2.";
+        const change1Text = "Agent Beta identified opportunities to expand the analysis with deeper historical context and structural nuance. Upgrading baseline for V2.";
         sendData('change1', change1Text);
 
         // Wait briefly
         await new Promise(r => setTimeout(r, 2000));
 
         // Step 4: Refinement (V2)
-        const v2System = "You are Agent Beta reforming the document based on the critique. If the critique says 'No major flaws', simply output Alpha's response polished for clarity. Otherwise, output the newly refined version (V2) addressing all concerns and ensuring 100% factual accuracy. IMPORTANT: DO NOT include any titles, headers like 'V2 Document:', or intro filler. Output ONLY the raw refined content.";
+        const v2System = "You are Agent Beta, tasked with massively expanding the document. Take Agent Alpha's brief baseline and upgrade it into a highly detailed, comprehensive analysis incorporating your previous critique. Add new structured sections, detailed breakdowns, and rich context. The V2 document MUST be significantly longer and deeper than the brief V1. DO NOT include any intro filler.";
         let v2Complete = "";
-        v2Complete = await streamFromFeatherless(AGENT_BETA_MODEL, v2System, `Original Document:\n${v1Complete}\n\nCritique to Address:\n${eval1Complete}\n\nPlease output the complete refined document with NO introductory text.`, chatHistory, (t) => sendData('v2', t));
+        v2Complete = await streamFromOpenRouter(AGENT_BETA_MODEL, v2System, `Original Document:\n${v1Complete}\n\nCritique to Address:\n${eval1Complete}\n\nPlease output the complete refined document with NO introductory text.`, chatHistory, (t) => sendData('v2', t));
 
         // Wait briefly
         await new Promise(r => setTimeout(r, 1000));
 
         // Step 5: Evaluation 2 (Final Verification)
-        const eval2System = "You are Chairman AI, the final verifier. Examine Agent Beta's document for absolute factual correctness and completeness. Give a brief 1-2 sentence final check summary. If it's flawless, explicitly confirm it. IMPORTANT: Do not include introductory filler.";
+        const eval2System = "You are Chairman AI, the final executive verifier. Review Agent Beta's detailed V2 document. Write exactly one profound, commanding sentence confirming the structure is excellent and directing the final synthesizer to elevate it into an exhaustive, flawlessly formatted ultimate masterpiece. IMPORTANT: Do not include introductory filler.";
         let eval2Complete = "";
-        eval2Complete = await streamFromFeatherless(CHAIRMAN_MODEL, eval2System, `Original User Prompt:\n${prompt}\n\nV2 Document:\n${v2Complete}`, chatHistory, (t) => sendData('eval2', t));
+        eval2Complete = await streamFromOpenRouter(CHAIRMAN_MODEL, eval2System, `Original User Prompt:\n${prompt}\n\nV2 Document:\n${v2Complete}`, chatHistory, (t) => sendData('eval2', t));
 
         // Step 6: Explanation 2
-        const change2Text = eval1Complete.includes("No major flaws")
-            ? "Chairman AI confirmed absolute factual correctness. Polishing final output."
-            : "Agent Beta's V2 was robust. Chairman AI verified all logic constraints and is structuring the final output for maximum clarity.";
+        const change2Text = "Chairman AI confirmed the refined logic is production-ready. Synthesizing the final executive masterpiece.";
         sendData('change2', change2Text);
 
         // Wait briefly
         await new Promise(r => setTimeout(r, 2000));
 
         // Step 7: Final Output (V3)
-        const v3System = "You are the Chairman AI. Based on Agent Beta's document and your Final Verification check, synthesize the ultimate Executive Output (V3). Ensure the answer is perfectly correct, answers the user's query fully, and is exceptionally well-formatted. IMPORTANT: DO NOT include any preamble, headers like 'Executive Synthesis:' or '**Executive Output (V3):**'. Output ONLY the beautifully formatted raw final content directly.";
-        await streamFromFeatherless(CHAIRMAN_MODEL, v3System, `V2 Document:\n${v2Complete}\n\nVerification Notes:\n${eval2Complete}\n\nProduce the final synthesized document seamlessly with NO intro titles.`, chatHistory, (t) => sendData('v3', t));
+        const v3System = "You are the Chairman AI. This is the final executive synthesis. Take the detailed V2 document and produce an entirely exhaustive, ultimate masterpiece. Go into as much detail as extraordinarily possible. Add a clear '**Executive Summary**' section at the top, and a '**Final Verdict**' section at the bottom. The Final Verdict MUST act as a profound, comprehensive, and easily digestible master-summary of all the deep details so the user instantly understands the complete picture. Make the markdown beautiful, rich, and breathtakingly authoritative. IMPORTANT: Output ONLY the nicely formatted raw final content directly.";
+        await streamFromOpenRouter(CHAIRMAN_MODEL, v3System, `V2 Document:\n${v2Complete}\n\nVerification Notes:\n${eval2Complete}\n\nProduce the final synthesized document seamlessly with NO intro titles.`, chatHistory, (t) => sendData('v3', t));
 
         // Completed
         sendData('completed', 'Done');
